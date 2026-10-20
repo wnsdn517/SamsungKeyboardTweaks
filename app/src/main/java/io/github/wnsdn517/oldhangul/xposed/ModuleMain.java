@@ -136,6 +136,17 @@ public final class ModuleMain implements IXposedHookLoadPackage, IXposedHookZygo
                 controller.resetState();
             }
         });
+        try {
+            XposedHelpers.findAndHookMethod(service, "onUpdateCursorAnchorInfo",
+                    android.view.inputmethod.CursorAnchorInfo.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            controller.onCursorAnchor((android.view.inputmethod.CursorAnchorInfo) param.args[0]);
+                        }
+                    });
+        } catch (Throwable t) {
+            XposedBridge.log("OldHangul: cursor anchor hook unavailable: " + t);
+        }
         XposedHelpers.findAndHookMethod(service, "onUpdateSelection",
                 int.class, int.class, int.class, int.class, int.class, int.class, new XC_MethodHook() {
                     @Override
