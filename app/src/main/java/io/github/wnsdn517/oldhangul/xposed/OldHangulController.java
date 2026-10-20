@@ -1776,15 +1776,15 @@ final class OldHangulController {
             if (typingOverlay == null) {
                 android.widget.LinearLayout bar = new android.widget.LinearLayout(service);
                 bar.setGravity(android.view.Gravity.CENTER);
-                bar.setPadding((int) (10 * density), 0, (int) (10 * density), 0);
+                bar.setPadding((int) (12 * density), 0, (int) (12 * density), 0);
                 meterBackground = new android.graphics.drawable.GradientDrawable();
                 meterBackground.setColor(0xCC202124);
-                meterBackground.setCornerRadius(9 * density);
+                meterBackground.setCornerRadius(11 * density);
                 bar.setBackground(meterBackground);
                 if (typingMeterView == null) {
                     typingMeterView = new android.widget.TextView(service);
                     typingMeterView.setTextColor(0xFFE6E6E6);
-                    typingMeterView.setTextSize(11f);
+                    typingMeterView.setTextSize(12.5f);
                     typingMeterView.setSingleLine(true);
                     typingMeterView.setIncludeFontPadding(false);
                     typingMeterView.setGravity(android.view.Gravity.CENTER);
@@ -1828,11 +1828,13 @@ final class OldHangulController {
                                 flags,
                                 android.graphics.PixelFormat.TRANSLUCENT);
                 lp.token = decor.getWindowToken();
-                lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+                overlayCards = hasCards;
+                lp.gravity = (hasCards ? android.view.Gravity.TOP : android.view.Gravity.BOTTOM)
+                        | android.view.Gravity.CENTER_HORIZONTAL;
                 // Centered in Samsung's bottom bar (the strip under the keys, 48dp on
                 // this build), not stuck to the screen edge.
                 int overlayHeight = lp.height;
-                lp.y = overlayY(density, overlayHeight);
+                lp.y = overlayY(density, overlayHeight, hasCards);
                 watchKeyboardTop(decor);
                 lp.flags |= android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
                 debug("typing meter y=" + lp.y + " overlay=" + overlayHeight);
@@ -1847,20 +1849,33 @@ final class OldHangulController {
     }
 
     /**
-     * Top of the overlay: just above Samsung's keyboard (its candidate / autocomplete row), so the
-     * meter and the answer cards sit over the word being typed. The strip under the keys is the
-     * system's navigation area and does not deliver touches, so cards placed there could not be tapped.
+     * Vertical offset of the overlay. The CPM/WPM meter sits centered in the strip under the keys
+     * (bottom gravity, 48dp strip). The answer cards must be tappable, and that strip is the system
+     * navigation area, so they go (top gravity) right above Samsung's keyboard, over its
+     * autocomplete row. The IME decor spans the whole screen, so the keyboard's own input area gives
+     * the top edge.
      */
-    private int overlayY(float density, int overlayHeight) {
-        int top = 0;
+    private int overlayY(float density, int overlayHeight, boolean cards) {
+        if (!cards) {
+            int strip = (int) (48 * density + 0.5f);
+            return -(strip + overlayHeight) / 2;
+        }
+        int top = -1;
         try {
-            int[] at = new int[2];
-            service.getWindow().getWindow().getDecorView().getLocationOnScreen(at);
-            top = at[1];
+            android.view.View area = service.getWindow().getWindow().findViewById(android.R.id.inputArea);
+            if (area != null && area.getHeight() > 0) {
+                int[] at = new int[2];
+                area.getLocationOnScreen(at);
+                top = at[1];
+            }
         } catch (RuntimeException ignored) {
             // not laid out yet: the layout listener fixes the position
         }
-        return Math.max(0, top - overlayHeight - (int) (2 * density));
+        if (top < 0) {
+            // Keyboard not measured yet: assume a typical keyboard height.
+            top = service.getResources().getDisplayMetrics().heightPixels - (int) (330 * density);
+        }
+        return Math.max(0, top - overlayHeight - (int) (4 * density));
     }
 
     private android.view.View watchedDecor;
@@ -1869,14 +1884,14 @@ final class OldHangulController {
     private void watchKeyboardTop(android.view.View decor) {
         if (watchedDecor == decor) return;
         watchedDecor = decor;
-        decor.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            if (t == ot && b == ob) return;
+        decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+            if (!overlayCards) return;
             if (typingOverlay == null || typingOverlayManager == null || typingOverlay.getWindowToken() == null) return;
             try {
                 android.view.WindowManager.LayoutParams lp =
                         (android.view.WindowManager.LayoutParams) typingOverlay.getLayoutParams();
                 float density = service.getResources().getDisplayMetrics().density;
-                int y = overlayY(density, lp.height);
+                int y = overlayY(density, lp.height, true);
                 if (lp.y != y) {
                     lp.y = y;
                     typingOverlayManager.updateViewLayout(typingOverlay, lp);
@@ -1897,42 +1912,66 @@ final class OldHangulController {
         boolean cards = toolResult != null && !toolResult.cards.isEmpty();
         typingMeterView.setVisibility(cards ? android.view.View.GONE : android.view.View.VISIBLE);
         toolScroll.setVisibility(cards ? android.view.View.VISIBLE : android.view.View.GONE);
-        if (cards) toolScroll.scrollTo(0, 0);
+        boolean appearing = cards && !cardsShown;
+        cardsShown = cards;
+        if (appearing) {
+            toolScroll.scrollTo(0, 0);
+            // Slide up and fade in when the answers appear.
+            toolCards.setAlpha(0f);
+            toolCards.setTranslationY(10 * density);
+            toolCards.animate().alpha(1f).translationY(0f).setDuration(180)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+        }
         if (typingOverlay != null) {
             // The cards are the buttons: no second frame around them (and no padding for the CPM text).
             typingOverlay.setBackground(cards ? null : meterBackground);
             typingOverlay.setPadding(cards ? 0 : (int) (12 * density), 0, cards ? 0 : (int) (12 * density), 0);
         }
         if (cards) {
+            boolean first = true;
             for (String[] card : toolResult.cards) {
                 android.widget.TextView t = new android.widget.TextView(service);
                 t.setText(card[0]);
                 t.setTextColor(0xFFFFFFFF);
-                t.setTextSize(13f);
+                t.setTextSize(15f);
+                t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
                 t.setSingleLine(true);
                 t.setIncludeFontPadding(false);
                 t.setGravity(android.view.Gravity.CENTER);
-                t.setPadding((int) (12 * density), 0, (int) (12 * density), 0);
+                t.setPadding((int) (16 * density), 0, (int) (16 * density), 0);
                 android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-                bg.setColor(0xFF3C5A9A);
-                bg.setCornerRadius(14 * density);
-                t.setBackground(bg);
+                bg.setColor(first ? 0xFF3D7BF7 : 0xFF3C4A66);
+                bg.setCornerRadius(18 * density);
+                bg.setStroke((int) Math.max(1, density), 0x33FFFFFF);
+                t.setBackground(new android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(0x55FFFFFF), bg, null));
+                t.setElevation(4 * density);
+                t.setOnTouchListener((v, ev) -> {
+                    int a = ev.getActionMasked();
+                    if (a == android.view.MotionEvent.ACTION_DOWN) {
+                        v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start();
+                    } else if (a == android.view.MotionEvent.ACTION_UP || a == android.view.MotionEvent.ACTION_CANCEL) {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(110).start();
+                    }
+                    return false;
+                });
+                first = false;
                 String insert = card[1];
                 t.setOnClickListener(v -> insertToolResult(insert));
                 android.widget.LinearLayout.LayoutParams lp =
-                        new android.widget.LinearLayout.LayoutParams(-2, (int) (28 * density));
-                lp.setMargins((int) (3 * density), 0, (int) (3 * density), 0);
+                        new android.widget.LinearLayout.LayoutParams(-2, (int) (34 * density));
+                lp.setMargins((int) (4 * density), 0, (int) (4 * density), 0);
                 toolCards.addView(t, lp);
             }
         }
         int width = -2;
         if (cards) {
             toolCards.measure(android.view.View.MeasureSpec.UNSPECIFIED,
-                    android.view.View.MeasureSpec.makeMeasureSpec((int) (28 * density), android.view.View.MeasureSpec.EXACTLY));
+                    android.view.View.MeasureSpec.makeMeasureSpec((int) (34 * density), android.view.View.MeasureSpec.EXACTLY));
             int screen = service.getResources().getDisplayMetrics().widthPixels;
             width = Math.min(toolCards.getMeasuredWidth(), screen - (int) (12 * density));
         }
-        resizeOverlay(density, cards ? 32 : 18, width, cards);
+        resizeOverlay(density, cards ? 40 : 22, width, cards);
     }
 
     private void resizeOverlay(float density, int heightDp, int widthPx, boolean cards) {
@@ -1953,8 +1992,13 @@ final class OldHangulController {
             }
             android.view.View decor = service.getWindow().getWindow().getDecorView();
             flags |= android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-            int targetY = overlayY(density, height);
-            if (lp.height == height && lp.width == widthPx && lp.flags == flags && lp.y == targetY) return;
+            int targetY = overlayY(density, height, cards);
+            int gravity = (cards ? android.view.Gravity.TOP : android.view.Gravity.BOTTOM)
+                    | android.view.Gravity.CENTER_HORIZONTAL;
+            overlayCards = cards;
+            if (lp.height == height && lp.width == widthPx && lp.flags == flags && lp.y == targetY
+                    && lp.gravity == gravity) return;
+            lp.gravity = gravity;
             lp.height = height;
             lp.width = widthPx;
             lp.flags = flags;
@@ -1965,7 +2009,9 @@ final class OldHangulController {
         }
     }
 
-    private int overlayHeightDp = 18;
+    private int overlayHeightDp = 22;
+    private boolean overlayCards;
+    private boolean cardsShown;
 
     /** Tapping the tool result types it in place of the expression (when that is still right before the cursor). */
     private void insertToolResult(String insert) {
