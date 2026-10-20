@@ -73,6 +73,7 @@ public final class ModuleMain implements IXposedHookLoadPackage, IXposedHookZygo
             hookCandidatePick(cl, controller);
             hookSmartCandidate(cl, controller);
             hookTranslationServer(targets, controller);
+            SettingsEntry.install(cl);
             XposedBridge.log("OldHangul: hooks installed");
         } catch (Throwable t) {
             XposedBridge.log("OldHangul: failed to hook Samsung Keyboard");

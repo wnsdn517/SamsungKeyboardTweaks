@@ -123,14 +123,12 @@ final class UndoBee {
             Object beeObject = getOrCreate(context);
             Object setting = targets.setting.get(world);
             int saved = (Integer) targets.settingIndex.invoke(setting, ID);
-            if (saved >= 0) {
-                targets.add.invoke(world, beeObject);
-                controller.debug("undo Bee restored to saved slot " + saved);
-            } else {
-                targets.place.invoke(world, beeObject, 0);
-                targets.save.invoke(world, "oldhangul undo added", false);
-                controller.debug("undo Bee added to the front of the toolbar");
-            }
+            // addBee puts the Bee into its saved slot or, when it has none, wherever Samsung has room
+            // (the toolbar or its overflow). The earlier place(bee, 0) expelled the last toolbar button
+            // and saveCurrentBeeSet wrote the reduced order back, so other buttons went missing from
+            // the toolbar and from the editor's list of buttons to add. Nothing of Samsung's is saved here.
+            targets.add.invoke(world, beeObject);
+            controller.debug("undo Bee added (saved slot " + saved + ")");
         } catch (Throwable t) {
             XposedBridge.log("OldHangul: could not add the undo button: " + t);
         }

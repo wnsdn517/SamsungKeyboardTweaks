@@ -94,6 +94,19 @@ final class CurrencyTool {
         words("CLP", "clp");
         words("COP", "cop");
         words("PEN", "pen");
+        words("USD", "미국 달러", "미불", "달러화", "us dollar", "us dollars");
+        words("JPY", "일본 엔", "일본엔");
+        words("CNY", "중국 위안", "중국위안", "cnh", "렌민비");
+        words("EUR", "유럽 유로", "유로존");
+        words("GBP", "영국 파운드", "파운드화");
+        words("HKD", "홍콩 달러");
+        words("TWD", "대만 달러", "타이완달러");
+        words("AUD", "호주 달러", "오스트레일리아달러");
+        words("CAD", "캐나다 달러");
+        words("SGD", "싱가포르 달러");
+        words("THB", "태국 바트", "태국바트");
+        words("VND", "베트남 동");
+        words("PHP", "필리핀 페소", "필리핀페소");
         words("BTC", "btc", "bitcoin", "비트코인", "ビットコイン");
         words("ETH", "eth", "ethereum", "이더리움");
         WORDS_LONGEST_FIRST.addAll(WORDS.keySet());
@@ -107,6 +120,11 @@ final class CurrencyTool {
 
     private static final Pattern AMOUNT = Pattern.compile(
             "^([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*(만|천|억|조|k|thousand|million|mil)?\\s*");
+    /** "…얼마", "…환율", "…?" at the end of a question. */
+    private static final Pattern FILLER = Pattern.compile(
+            "\\s*(?:[은는이가]\\s*)?(?:얼마(?:야|지|예요|에요|임|인가요|나)?|몇\\s*[원달러엔]?|환율|환산|변환|계산)?\\s*[?？!.~]*$");
+    private static final Pattern EXPLICIT_SEPARATOR = Pattern.compile(
+            "^\\s*(?:->|=>|→|=|>|to\\b|in\\b|into\\b|로|으로|→)\\s*");
     private static final Pattern SEPARATOR = Pattern.compile(
             "^\\s*(?:->|=>|→|=|>|-|~|/|_|:|2|to\\b|in\\b|into\\b|로|으로)?\\s*");
 
@@ -114,7 +132,8 @@ final class CurrencyTool {
     static ToolSuggester.Result parse(String expr) {
         if (!enabled || rates.isEmpty() || expr == null) return null;
         String s = expr.trim().toLowerCase(Locale.ROOT);
-        if (s.length() < 2 || s.length() > 40) return null;
+        s = FILLER.matcher(s).replaceFirst("").trim();
+        if (s.length() < 2 || s.length() > 48) return null;
 
         String from;
         double amount;
@@ -141,10 +160,19 @@ final class CurrencyTool {
             if (code == null) return null;
             String after = s.substring(wordLength(s)).trim();
             Matcher n = AMOUNT.matcher(after);
-            if (!n.find()) return null;
-            from = code;
-            amount = number(n.group(1), n.group(2));
-            rest = after.substring(n.end());
+            if (!n.find()) {
+                // "usd to krw", "달러 -> 원": one unit, but only with an explicit separator
+                // (a bare "try php" in running text is not a question).
+                Matcher sep = EXPLICIT_SEPARATOR.matcher(after);
+                if (!sep.find() || sep.end() >= after.length()) return null;
+                from = code;
+                amount = 1;
+                rest = after;
+            } else {
+                from = code;
+                amount = number(n.group(1), n.group(2));
+                rest = after.substring(n.end());
+            }
         }
         if (Double.isNaN(amount) || amount <= 0) return null;
         Double fromRate = rates.get(from);
@@ -153,9 +181,18 @@ final class CurrencyTool {
         String[] targets;
         String tail = SEPARATOR.matcher(rest).replaceFirst("").trim();
         if (!tail.isEmpty()) {
-            String to = leadingWord(tail);
-            if (to == null || wordLength(tail) != tail.length() || to.equals(from)) return null;
-            targets = new String[] {to};
+            // one or more target currencies: "usd krw", "100 usd to krw jpy", "100달러 원 엔"
+            List<String> list = new ArrayList<>();
+            String left = tail;
+            while (!left.isEmpty()) {
+                String to = leadingWord(left);
+                if (to == null) return null;
+                int len = wordLength(left);
+                if (!to.equals(from) && !list.contains(to)) list.add(to);
+                left = left.substring(len).replaceFirst("^[\\s,/·+&]+", "");
+            }
+            if (list.isEmpty()) return null;
+            targets = list.toArray(new String[0]);
         } else if (rest.trim().isEmpty() || SEPARATOR.matcher(rest).replaceFirst("").trim().isEmpty()) {
             targets = defaultTargets(from);
         } else {
@@ -179,9 +216,21 @@ final class CurrencyTool {
         return result;
     }
 
+    /** The device's own currency, shown first so "100 usd" answers in what the user spends. */
+    private static String localCurrency() {
+        try {
+            return java.util.Currency.getInstance(Locale.getDefault()).getCurrencyCode();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     private static String[] defaultTargets(String from) {
         List<String> out = new ArrayList<>();
+        String local = localCurrency();
+        if (local != null && !local.equals(from) && rates.containsKey(local)) out.add(local);
         for (String code : POPULAR) {
+            if (out.contains(code)) continue;
             if (!code.equals(from) && rates.containsKey(code)) out.add(code);
             if (out.size() == 4) break;
         }

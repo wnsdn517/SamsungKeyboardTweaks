@@ -724,6 +724,12 @@ final class OldHangulController {
             }
         }
         boolean hadWord = !composer.isEmpty() || samsungDesynced;
+        // Finishing the word and Samsung's own commit of the blank (space, newline) that follows
+        // are two calls; asynchronous editors (Chrome, WebView) sometimes lost the blank between
+        // them. Hold both in one batch until Samsung's action is done (see afterKeyAction).
+        if (!composer.isEmpty() && !directMode) {
+            openActionBatch();
+        }
         commitComposing();
         samsungWordPending = (multilingual || samsungSuggest) && hadWord && !samsungWord;
         samsungDesynced = false;
@@ -734,6 +740,36 @@ final class OldHangulController {
     /** Samsung's key action finished. */
     void afterKeyAction() {
         samsungWordPending = false;
+        closeActionBatch();
+    }
+
+    private InputConnection actionBatch;
+    private final Runnable actionBatchTimeout = this::closeActionBatch;
+
+    private void openActionBatch() {
+        closeActionBatch();
+        InputConnection ic = inputConnection();
+        if (ic == null) return;
+        try {
+            ic.beginBatchEdit();
+            actionBatch = ic;
+            // Never leave the editor in a batch if the key action does not come back.
+            handler.postDelayed(actionBatchTimeout, 500);
+        } catch (RuntimeException e) {
+            debug("batch open failed: " + e);
+        }
+    }
+
+    private void closeActionBatch() {
+        InputConnection ic = actionBatch;
+        if (ic == null) return;
+        actionBatch = null;
+        handler.removeCallbacks(actionBatchTimeout);
+        try {
+            ic.endBatchEdit();
+        } catch (RuntimeException e) {
+            debug("batch close failed: " + e);
+        }
     }
 
     /** A suggestion / Hanja candidate was tapped: Samsung is about to put it in place of the word. */
@@ -1273,6 +1309,7 @@ final class OldHangulController {
             // the text was replaced...) and no edit of ours is still in flight:
             // forget it, or the next key would bring the sent text back.
             debug("composing gone from editor, dropping composing=" + composing);
+            ic.finishComposingText();
             composer.reset();
             composing = "";
             inWord = false;
@@ -1464,6 +1501,7 @@ final class OldHangulController {
      * empty composing state overwrite the editor's text.
      */
     void onRestartInput() {
+        closeActionBatch();
         // A restart is also used by chat apps after Send (KakaoTalk etc.) and
         // by translation/search actions. The editor already owns its text at
         // this point, so do NOT touch it here: the old code called
@@ -1489,6 +1527,7 @@ final class OldHangulController {
     }
 
     void resetState() {
+        closeActionBatch();
         clearWordLanguage();
         if (!composer.isEmpty()) {
             debug("resetState dropping composing=" + composing);
@@ -1520,7 +1559,12 @@ final class OldHangulController {
 
         boolean echo = SystemClock.uptimeMillis() - lastEditAt < EDIT_ECHO_MS;
         CharSequence beforeEcho = null;
-        if (!composing.isEmpty()) {
+        // The editor reports its composing region itself (args 4 and 5): when that is exactly our
+        // word before the cursor, no (blocking, for asynchronous editors slow) text read is needed.
+        boolean regionMatches = !composing.isEmpty() && newSelStart == newSelEnd
+                && (Integer) args[5] == newSelEnd
+                && (Integer) args[5] - (Integer) args[4] == composing.length();
+        if (!composing.isEmpty() && !regionMatches) {
             try {
                 InputConnection ic = inputConnection();
                 beforeEcho = ic == null ? null : ic.getTextBeforeCursor(composing.length(), 0);
@@ -1529,7 +1573,7 @@ final class OldHangulController {
             }
         }
 
-        if (beforeEcho == null || !composing.contentEquals(beforeEcho)) {
+        if (!regionMatches && (beforeEcho == null || !composing.contentEquals(beforeEcho))) {
             // The editor may still be applying our edit asynchronously and answer
             // with the text from before it, so a mismatch is not proof that the
             // word is gone. Dropping it here committed every syllable on its own
@@ -1545,6 +1589,11 @@ final class OldHangulController {
                 // in a chat app empties the field). Drop the word now so no
                 // later key rewrites it.
                 debug("beforeUpdateSelection: editor changed under us, dropping " + composing);
+                // The cursor was moved (or the app changed the text) while the word was composing.
+                // Samsung's own finish was blocked meanwhile, so the editor may still hold the word
+                // as a composing span: the next setComposingText would replace that span at its old
+                // position and the new text would vanish from where the cursor is now. Settle it.
+                finishStaleComposing();
                 composer.reset();
                 composing = "";
                 composingMaybeLost = false;
@@ -1563,6 +1612,22 @@ final class OldHangulController {
             inWord = false;
         }
         lastSelection = newSelEnd;
+    }
+
+    /** Ends a composing span of ours that the editor still holds somewhere else than at the cursor. */
+    private void finishStaleComposing() {
+        InputConnection ic = inputConnection();
+        if (ic == null) return;
+        boolean previous = internalEdit;
+        internalEdit = true;
+        try {
+            ic.finishComposingText();
+        } catch (RuntimeException e) {
+            debug("finishStaleComposing failed: " + e);
+        } finally {
+            internalEdit = previous;
+        }
+        lastEditAt = SystemClock.uptimeMillis();
     }
 
     /**
@@ -1711,15 +1776,15 @@ final class OldHangulController {
             if (typingOverlay == null) {
                 android.widget.LinearLayout bar = new android.widget.LinearLayout(service);
                 bar.setGravity(android.view.Gravity.CENTER);
-                bar.setPadding((int) (12 * density), 0, (int) (12 * density), 0);
+                bar.setPadding((int) (10 * density), 0, (int) (10 * density), 0);
                 meterBackground = new android.graphics.drawable.GradientDrawable();
                 meterBackground.setColor(0xCC202124);
-                meterBackground.setCornerRadius(11 * density);
+                meterBackground.setCornerRadius(9 * density);
                 bar.setBackground(meterBackground);
                 if (typingMeterView == null) {
                     typingMeterView = new android.widget.TextView(service);
                     typingMeterView.setTextColor(0xFFE6E6E6);
-                    typingMeterView.setTextSize(12.5f);
+                    typingMeterView.setTextSize(11f);
                     typingMeterView.setSingleLine(true);
                     typingMeterView.setIncludeFontPadding(false);
                     typingMeterView.setGravity(android.view.Gravity.CENTER);
@@ -1763,11 +1828,12 @@ final class OldHangulController {
                                 flags,
                                 android.graphics.PixelFormat.TRANSLUCENT);
                 lp.token = decor.getWindowToken();
-                lp.gravity = android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL;
+                lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
                 // Centered in Samsung's bottom bar (the strip under the keys, 48dp on
                 // this build), not stuck to the screen edge.
                 int overlayHeight = lp.height;
                 lp.y = overlayY(density, overlayHeight);
+                watchKeyboardTop(decor);
                 lp.flags |= android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
                 debug("typing meter y=" + lp.y + " overlay=" + overlayHeight);
                 wm.addView(typingOverlay, lp);
@@ -1781,14 +1847,44 @@ final class OldHangulController {
     }
 
     /**
-     * Meter's bottom offset. The overlay is attached to the keyboard window, which
-     * ends above the 48dp strip under the keys (the system navigation area: 2154 of
-     * 2280 here, even when the decor reports the full height). A fixed 48dp offset
-     * therefore put the meter on the space bar; this centers it in that strip.
+     * Top of the overlay: just above Samsung's keyboard (its candidate / autocomplete row), so the
+     * meter and the answer cards sit over the word being typed. The strip under the keys is the
+     * system's navigation area and does not deliver touches, so cards placed there could not be tapped.
      */
     private int overlayY(float density, int overlayHeight) {
-        int strip = (int) (48 * density + 0.5f);
-        return -(strip + overlayHeight) / 2;
+        int top = 0;
+        try {
+            int[] at = new int[2];
+            service.getWindow().getWindow().getDecorView().getLocationOnScreen(at);
+            top = at[1];
+        } catch (RuntimeException ignored) {
+            // not laid out yet: the layout listener fixes the position
+        }
+        return Math.max(0, top - overlayHeight - (int) (2 * density));
+    }
+
+    private android.view.View watchedDecor;
+
+    /** The keyboard changes height (toolbar, candidates, resizing): keep the overlay on top of it. */
+    private void watchKeyboardTop(android.view.View decor) {
+        if (watchedDecor == decor) return;
+        watchedDecor = decor;
+        decor.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (t == ot && b == ob) return;
+            if (typingOverlay == null || typingOverlayManager == null || typingOverlay.getWindowToken() == null) return;
+            try {
+                android.view.WindowManager.LayoutParams lp =
+                        (android.view.WindowManager.LayoutParams) typingOverlay.getLayoutParams();
+                float density = service.getResources().getDisplayMetrics().density;
+                int y = overlayY(density, lp.height);
+                if (lp.y != y) {
+                    lp.y = y;
+                    typingOverlayManager.updateViewLayout(typingOverlay, lp);
+                }
+            } catch (RuntimeException e) {
+                debug("overlay reposition failed: " + e);
+            }
+        });
     }
 
     /**
@@ -1812,19 +1908,19 @@ final class OldHangulController {
                 android.widget.TextView t = new android.widget.TextView(service);
                 t.setText(card[0]);
                 t.setTextColor(0xFFFFFFFF);
-                t.setTextSize(15f);
+                t.setTextSize(13f);
                 t.setSingleLine(true);
                 t.setIncludeFontPadding(false);
                 t.setGravity(android.view.Gravity.CENTER);
-                t.setPadding((int) (16 * density), 0, (int) (16 * density), 0);
+                t.setPadding((int) (12 * density), 0, (int) (12 * density), 0);
                 android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
                 bg.setColor(0xFF3C5A9A);
-                bg.setCornerRadius(18 * density);
+                bg.setCornerRadius(14 * density);
                 t.setBackground(bg);
                 String insert = card[1];
                 t.setOnClickListener(v -> insertToolResult(insert));
                 android.widget.LinearLayout.LayoutParams lp =
-                        new android.widget.LinearLayout.LayoutParams(-2, (int) (36 * density));
+                        new android.widget.LinearLayout.LayoutParams(-2, (int) (28 * density));
                 lp.setMargins((int) (3 * density), 0, (int) (3 * density), 0);
                 toolCards.addView(t, lp);
             }
@@ -1832,11 +1928,11 @@ final class OldHangulController {
         int width = -2;
         if (cards) {
             toolCards.measure(android.view.View.MeasureSpec.UNSPECIFIED,
-                    android.view.View.MeasureSpec.makeMeasureSpec((int) (36 * density), android.view.View.MeasureSpec.EXACTLY));
+                    android.view.View.MeasureSpec.makeMeasureSpec((int) (28 * density), android.view.View.MeasureSpec.EXACTLY));
             int screen = service.getResources().getDisplayMetrics().widthPixels;
             width = Math.min(toolCards.getMeasuredWidth(), screen - (int) (12 * density));
         }
-        resizeOverlay(density, cards ? 40 : 22, width, cards);
+        resizeOverlay(density, cards ? 32 : 18, width, cards);
     }
 
     private void resizeOverlay(float density, int heightDp, int widthPx, boolean cards) {
@@ -1869,7 +1965,7 @@ final class OldHangulController {
         }
     }
 
-    private int overlayHeightDp = 22;
+    private int overlayHeightDp = 18;
 
     /** Tapping the tool result types it in place of the expression (when that is still right before the cursor). */
     private void insertToolResult(String insert) {
@@ -1882,14 +1978,26 @@ final class OldHangulController {
         try {
             ic.beginBatchEdit();
             ic.finishComposingText();
-            CharSequence before = ic.getTextBeforeCursor(r.consumed, 0);
-            if (before != null && before.toString().trim().equals(r.expression)) {
-                ic.deleteSurroundingText(r.consumed, 0);
+            // Look a little further back than the expression: trailing blanks and the like shift it.
+            CharSequence before = ic.getTextBeforeCursor(r.consumed + 8, 0);
+            if (before != null) {
+                String text = before.toString();
+                int at = text.lastIndexOf(r.expression);
+                if (at >= 0) {
+                    int remove = text.length() - at;
+                    ic.deleteSurroundingText(remove, 0);
+                }
             }
             ic.commitText(insert, 1);
-            ic.endBatchEdit();
+            rememberEdit("입력 " + insert);
+            lastEditAt = SystemClock.uptimeMillis();
             debug("tool inserted " + insert + " for " + r.expression);
         } finally {
+            try {
+                ic.endBatchEdit();
+            } catch (RuntimeException ignored) {
+                // the connection is gone
+            }
             internalEdit = previous;
         }
         recentText.setLength(0);

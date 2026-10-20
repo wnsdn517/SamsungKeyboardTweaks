@@ -98,4 +98,14 @@ public class CurrencyToolTest {
         assertEquals(1.2e-5, b.get("BTC"), 1e-12);
         assertTrue(CurrencyTool.parseRates(null).isEmpty());
     }
+
+    @Test
+    public void questionsAndSeveralTargets() {
+        assertEquals("$1.00 = ₩1,400", show("usd to krw"));
+        assertEquals("$1.00 = ₩1,400", show("달러 -> 원"));
+        assertNull(show("try php"));
+        assertEquals("$100.00 = ₩140,000", show("100 usd to krw?"));
+        assertEquals("$100.00 = ₩140,000", show("100달러 원 얼마"));
+        assertEquals("$100.00 = ₩140,000 · ¥15,000", show("100 usd to krw jpy"));
+    }
 }
